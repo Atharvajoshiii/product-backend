@@ -28,6 +28,9 @@ app.use((req, res, next) => {
 const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 3000;
 
+// Variable to store MongoDB connection error
+let mongoConnectionError = null;
+
 // MongoDB connection options for better error handling
 const mongooseOptions = {
     serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
@@ -36,13 +39,16 @@ const mongooseOptions = {
 
 if (!MONGODB_URI) {
     console.error('❌ MONGODB_URI is not defined in environment variables');
+    mongoConnectionError = 'MONGODB_URI environment variable is not defined';
 } else {
     mongoose.connect(MONGODB_URI, mongooseOptions)
         .then(() => {
             console.log('✅ Connected to MongoDB successfully');
             console.log('📍 Database:', mongoose.connection.name);
+            mongoConnectionError = null; // Clear error on successful connection
         })
         .catch((error) => {
+            mongoConnectionError = error.message;
             console.error('❌ MongoDB connection error:', error.message);
             console.error('⚠️  API will start but database operations will fail');
             console.error('🔧 Check: 1) MONGODB_URI is correct, 2) Network access is configured, 3) Database user exists');
@@ -55,11 +61,13 @@ mongoose.connection.on('disconnected', () => {
 });
 
 mongoose.connection.on('error', (error) => {
+    mongoConnectionError = error.message;
     console.error('❌ MongoDB connection error:', error.message);
 });
 
 mongoose.connection.on('connected', () => {
     console.log('✅ MongoDB connected');
+    mongoConnectionError = null;
 });
 
 // Routes
@@ -87,12 +95,17 @@ app.get('/api/health', (req, res) => {
         database: {
             status: dbStatusMap[dbStatus],
             connected: isHealthy,
-            uri: MONGODB_URI ? '✓ Configured' : '✗ Not configured'
+            uri: MONGODB_URI ? '✓ Configured' : '✗ Not configured',
+            error: mongoConnectionError || null,
+            errorDetails: !isHealthy && mongoConnectionError ? {
+                message: mongoConnectionError,
+                help: 'Check MongoDB Atlas network access, credentials, and connection string format'
+            } : null
         },
         uptime: process.uptime(),
         message: isHealthy 
             ? 'API and Database are operational' 
-            : 'Database connection failed - check MongoDB configuration'
+            : `Database connection failed: ${mongoConnectionError || 'Unknown error'}`
     });
 });
 
@@ -108,15 +121,28 @@ app.get('/', (req, res) => {
             version: '1.0.0',
             database: {
                 status: dbStatus === 0 ? 'disconnected' : dbStatus === 2 ? 'connecting' : 'unknown',
-                error: 'MongoDB connection failed. Please check MONGODB_URI environment variable.'
+                error: mongoConnectionError || 'MongoDB connection failed',
+                errorMessage: mongoConnectionError,
+                connectionString: MONGODB_URI ? 'Configured (check format)' : 'Not configured'
             },
             healthCheck: '/api/health',
             troubleshooting: [
                 'Verify MONGODB_URI is set in environment variables',
+                'Ensure connection string includes database name: /productdb',
                 'Check MongoDB Atlas network access allows Vercel IPs (0.0.0.0/0)',
                 'Ensure database user has proper permissions',
                 'Check MongoDB Atlas cluster is running'
-            ]
+            ],
+            detailedError: mongoConnectionError ? {
+                errorType: mongoConnectionError.includes('authentication') ? 'Authentication Failed' :
+                           mongoConnectionError.includes('ENOTFOUND') ? 'DNS/Network Error' :
+                           mongoConnectionError.includes('timeout') ? 'Connection Timeout' :
+                           'Unknown Error',
+                suggestion: mongoConnectionError.includes('authentication') ? 'Check username/password in connection string' :
+                           mongoConnectionError.includes('ENOTFOUND') ? 'Check cluster URL in connection string' :
+                           mongoConnectionError.includes('timeout') ? 'Check network access whitelist (0.0.0.0/0)' :
+                           'Check Vercel logs for more details'
+            } : null
         });
     }
 
@@ -126,7 +152,8 @@ app.get('/', (req, res) => {
         version: '1.0.0',
         database: {
             status: 'connected',
-            connected: true
+            connected: true,
+            name: mongoose.connection.name || 'productdb'
         },
         endpoints: {
             health: '/api/health',
