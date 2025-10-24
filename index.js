@@ -25,37 +25,111 @@ app.use((req, res, next) => {
 });
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/productdb';
+const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 3000;
 
-mongoose.connect(MONGODB_URI)
-    .then(() => {
-        console.log('✅ Connected to MongoDB successfully');
-    })
-    .catch((error) => {
-        console.error('❌ MongoDB connection error:', error.message);
-        process.exit(1);
-    });
+// MongoDB connection options for better error handling
+const mongooseOptions = {
+    serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+    socketTimeoutMS: 45000,
+};
+
+if (!MONGODB_URI) {
+    console.error('❌ MONGODB_URI is not defined in environment variables');
+} else {
+    mongoose.connect(MONGODB_URI, mongooseOptions)
+        .then(() => {
+            console.log('✅ Connected to MongoDB successfully');
+            console.log('📍 Database:', mongoose.connection.name);
+        })
+        .catch((error) => {
+            console.error('❌ MongoDB connection error:', error.message);
+            console.error('⚠️  API will start but database operations will fail');
+            console.error('🔧 Check: 1) MONGODB_URI is correct, 2) Network access is configured, 3) Database user exists');
+        });
+}
 
 // MongoDB connection event listeners
 mongoose.connection.on('disconnected', () => {
-    console.log('MongoDB disconnected');
+    console.log('⚠️  MongoDB disconnected');
 });
 
 mongoose.connection.on('error', (error) => {
-    console.error('MongoDB connection error:', error);
+    console.error('❌ MongoDB connection error:', error.message);
+});
+
+mongoose.connection.on('connected', () => {
+    console.log('✅ MongoDB connected');
 });
 
 // Routes
 const productRoutes = require('./routes/productroute');
 app.use('/api', productRoutes);
 
-// Root route
+// Health check endpoint with MongoDB status
+app.get('/api/health', (req, res) => {
+    const dbStatus = mongoose.connection.readyState;
+    const dbStatusMap = {
+        0: 'disconnected',
+        1: 'connected',
+        2: 'connecting',
+        3: 'disconnecting'
+    };
+
+    const isHealthy = dbStatus === 1;
+    const statusCode = isHealthy ? 200 : 503;
+
+    res.status(statusCode).json({
+        success: isHealthy,
+        status: isHealthy ? 'healthy' : 'unhealthy',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        database: {
+            status: dbStatusMap[dbStatus],
+            connected: isHealthy,
+            uri: MONGODB_URI ? '✓ Configured' : '✗ Not configured'
+        },
+        uptime: process.uptime(),
+        message: isHealthy 
+            ? 'API and Database are operational' 
+            : 'Database connection failed - check MongoDB configuration'
+    });
+});
+
+// Root route with MongoDB connection check
 app.get('/', (req, res) => {
+    const dbStatus = mongoose.connection.readyState;
+    const isConnected = dbStatus === 1;
+
+    if (!isConnected) {
+        return res.status(503).json({
+            success: false,
+            message: 'API is running but database is not connected',
+            version: '1.0.0',
+            database: {
+                status: dbStatus === 0 ? 'disconnected' : dbStatus === 2 ? 'connecting' : 'unknown',
+                error: 'MongoDB connection failed. Please check MONGODB_URI environment variable.'
+            },
+            healthCheck: '/api/health',
+            troubleshooting: [
+                'Verify MONGODB_URI is set in environment variables',
+                'Check MongoDB Atlas network access allows Vercel IPs (0.0.0.0/0)',
+                'Ensure database user has proper permissions',
+                'Check MongoDB Atlas cluster is running'
+            ]
+        });
+    }
+
     res.json({
+        success: true,
         message: 'Welcome to Product API',
         version: '1.0.0',
+        database: {
+            status: 'connected',
+            connected: true
+        },
         endpoints: {
+            health: '/api/health',
             products: '/api/products',
             createProduct: 'POST /api/products',
             getProducts: 'GET /api/products',
