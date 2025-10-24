@@ -33,8 +33,9 @@ let mongoConnectionError = null;
 
 // MongoDB connection options for better error handling
 const mongooseOptions = {
-    serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+    serverSelectionTimeoutMS: 10000, // Increased timeout to 10s for serverless
     socketTimeoutMS: 45000,
+    family: 4 // Force IPv4
 };
 
 if (!MONGODB_URI) {
@@ -106,6 +107,34 @@ app.get('/api/health', (req, res) => {
         message: isHealthy 
             ? 'API and Database are operational' 
             : `Database connection failed: ${mongoConnectionError || 'Unknown error'}`
+    });
+});
+
+// Debug endpoint to check connection string format (for troubleshooting)
+app.get('/api/debug', (req, res) => {
+    const maskedUri = MONGODB_URI 
+        ? MONGODB_URI.replace(/\/\/([^:]+):([^@]+)@/, '//$1:****@')
+        : 'Not configured';
+    
+    const hasDbName = MONGODB_URI ? MONGODB_URI.includes('/productdb') || MONGODB_URI.includes('/test') : false;
+    
+    res.json({
+        connectionString: {
+            configured: !!MONGODB_URI,
+            masked: maskedUri,
+            hasDatabaseName: hasDbName,
+            format: MONGODB_URI ? (
+                MONGODB_URI.startsWith('mongodb+srv://') ? 'SRV (correct)' : 'Standard'
+            ) : 'Missing'
+        },
+        mongooseStatus: {
+            readyState: mongoose.connection.readyState,
+            name: mongoose.connection.name || 'Not connected',
+            host: mongoose.connection.host || 'Not connected'
+        },
+        lastError: mongoConnectionError,
+        environment: process.env.NODE_ENV || 'development',
+        nodeVersion: process.version
     });
 });
 
